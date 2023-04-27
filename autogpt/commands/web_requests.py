@@ -1,70 +1,24 @@
 """Browse a webpage and summarize it using the LLM model"""
-from typing import List, Tuple, Union
-from urllib.parse import urljoin, urlparse
+from __future__ import annotations
 
 import requests
-from requests import Response
 from bs4 import BeautifulSoup
+from requests import Response
 
 from autogpt.config import Config
-from autogpt.memory import get_memory
+from autogpt.processing.html import extract_hyperlinks, format_hyperlinks
+from autogpt.url_utils.validators import validate_url
 
 CFG = Config()
-memory = get_memory(CFG)
 
 session = requests.Session()
 session.headers.update({"User-Agent": CFG.user_agent})
 
 
-def is_valid_url(url: str) -> bool:
-    """Check if the URL is valid
-
-    Args:
-        url (str): The URL to check
-
-    Returns:
-        bool: True if the URL is valid, False otherwise
-    """
-    try:
-        result = urlparse(url)
-        return all([result.scheme, result.netloc])
-    except ValueError:
-        return False
-
-
-def sanitize_url(url: str) -> str:
-    """Sanitize the URL
-
-    Args:
-        url (str): The URL to sanitize
-
-    Returns:
-        str: The sanitized URL
-    """
-    return urljoin(url, urlparse(url).path)
-
-
-def check_local_file_access(url: str) -> bool:
-    """Check if the URL is a local file
-
-    Args:
-        url (str): The URL to check
-
-    Returns:
-        bool: True if the URL is a local file, False otherwise
-    """
-    local_prefixes = [
-        "file:///",
-        "file://localhost",
-        "http://localhost",
-        "https://localhost",
-    ]
-    return any(url.startswith(prefix) for prefix in local_prefixes)
-
-
+@validate_url
 def get_response(
     url: str, timeout: int = 10
-) -> Union[Tuple[None, str], Tuple[Response, None]]:
+) -> tuple[None, str] | tuple[Response, None]:
     """Get the response from a URL
 
     Args:
@@ -79,17 +33,7 @@ def get_response(
         requests.exceptions.RequestException: If the HTTP request fails
     """
     try:
-        # Restrict access to local files
-        if check_local_file_access(url):
-            raise ValueError("Access to local files is restricted")
-
-        # Most basic check if the URL is valid:
-        if not url.startswith("http://") and not url.startswith("https://"):
-            raise ValueError("Invalid URL format")
-
-        sanitized_url = sanitize_url(url)
-
-        response = session.get(sanitized_url, timeout=timeout)
+        response = session.get(url, timeout=timeout)
 
         # Check if the response contains an HTTP error
         if response.status_code >= 400:
@@ -134,44 +78,14 @@ def scrape_text(url: str) -> str:
     return text
 
 
-def extract_hyperlinks(soup: BeautifulSoup) -> List[Tuple[str, str]]:
-    """Extract hyperlinks from a BeautifulSoup object
-
-    Args:
-        soup (BeautifulSoup): The BeautifulSoup object
-
-    Returns:
-        List[Tuple[str, str]]: The extracted hyperlinks
-    """
-    hyperlinks = []
-    for link in soup.find_all("a", href=True):
-        hyperlinks.append((link.text, link["href"]))
-    return hyperlinks
-
-
-def format_hyperlinks(hyperlinks: List[Tuple[str, str]]) -> List[str]:
-    """Format hyperlinks into a list of strings
-
-    Args:
-        hyperlinks (List[Tuple[str, str]]): The hyperlinks to format
-
-    Returns:
-        List[str]: The formatted hyperlinks
-    """
-    formatted_links = []
-    for link_text, link_url in hyperlinks:
-        formatted_links.append(f"{link_text} ({link_url})")
-    return formatted_links
-
-
-def scrape_links(url: str) -> Union[str, List[str]]:
+def scrape_links(url: str) -> str | list[str]:
     """Scrape links from a webpage
 
     Args:
         url (str): The URL to scrape links from
 
     Returns:
-        Union[str, List[str]]: The scraped links
+       str | list[str]: The scraped links
     """
     response, error_message = get_response(url)
     if error_message:
@@ -183,7 +97,7 @@ def scrape_links(url: str) -> Union[str, List[str]]:
     for script in soup(["script", "style"]):
         script.extract()
 
-    hyperlinks = extract_hyperlinks(soup)
+    hyperlinks = extract_hyperlinks(soup, url)
 
     return format_hyperlinks(hyperlinks)
 
@@ -192,7 +106,7 @@ def create_message(chunk, question):
     """Create a message for the user to summarize a chunk of text"""
     return {
         "role": "user",
-        "content": f'"""{chunk}""" Using the above text, please answer the following'
+        "content": f'"""{chunk}""" Using the above text, answer the following'
         f' question: "{question}" -- if the question cannot be answered using the'
-        " text, please summarize the text.",
+        " text, summarize the text.",
     }

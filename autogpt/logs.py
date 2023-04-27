@@ -5,15 +5,14 @@ import os
 import random
 import re
 import time
-from logging import LogRecord
 import traceback
+from logging import LogRecord
 
 from colorama import Fore, Style
 
+from autogpt.singleton import Singleton
 from autogpt.speech import say_text
-from autogpt.config import Config, Singleton
-
-CFG = Config()
+from autogpt.utils import send_chat_message_to_user
 
 
 class Logger(metaclass=Singleton):
@@ -46,7 +45,9 @@ class Logger(metaclass=Singleton):
         self.console_handler.setFormatter(console_formatter)
 
         # Info handler in activity.log
-        self.file_handler = logging.FileHandler(os.path.join(log_dir, log_file))
+        self.file_handler = logging.FileHandler(
+            os.path.join(log_dir, log_file), "a", "utf-8"
+        )
         self.file_handler.setLevel(logging.DEBUG)
         info_formatter = AutoGptFormatter(
             "%(asctime)s %(levelname)s %(title)s %(message_no_color)s"
@@ -54,7 +55,9 @@ class Logger(metaclass=Singleton):
         self.file_handler.setFormatter(info_formatter)
 
         # Error handler error.log
-        error_handler = logging.FileHandler(os.path.join(log_dir, error_file))
+        error_handler = logging.FileHandler(
+            os.path.join(log_dir, error_file), "a", "utf-8"
+        )
         error_handler.setLevel(logging.ERROR)
         error_formatter = AutoGptFormatter(
             "%(asctime)s %(levelname)s %(module)s:%(funcName)s:%(lineno)d %(title)s"
@@ -74,11 +77,15 @@ class Logger(metaclass=Singleton):
         self.logger.addHandler(error_handler)
         self.logger.setLevel(logging.DEBUG)
 
+        self.speak_mode = False
+
     def typewriter_log(
         self, title="", title_color="", content="", speak_text=False, level=logging.INFO
     ):
-        if speak_text and CFG.speak_mode:
+        if speak_text and self.speak_mode:
             say_text(f"{title}. {content}")
+
+        send_chat_message_to_user(f"{title}. {content}")
 
         if content:
             if isinstance(content, list):
@@ -198,91 +205,41 @@ def remove_color_codes(s: str) -> str:
 logger = Logger()
 
 
-def print_assistant_thoughts(ai_name, assistant_reply):
-    """Prints the assistant's thoughts to the console"""
-    from autogpt.json_fixes.bracket_termination import (
-        attempt_to_fix_json_by_finding_outermost_brackets,
+def print_assistant_thoughts(
+    ai_name: object,
+    assistant_reply_json_valid: object,
+    speak_mode: bool = False,
+) -> None:
+    assistant_thoughts_reasoning = None
+    assistant_thoughts_plan = None
+    assistant_thoughts_speak = None
+    assistant_thoughts_criticism = None
+
+    assistant_thoughts = assistant_reply_json_valid.get("thoughts", {})
+    assistant_thoughts_text = assistant_thoughts.get("text")
+    if assistant_thoughts:
+        assistant_thoughts_reasoning = assistant_thoughts.get("reasoning")
+        assistant_thoughts_plan = assistant_thoughts.get("plan")
+        assistant_thoughts_criticism = assistant_thoughts.get("criticism")
+        assistant_thoughts_speak = assistant_thoughts.get("speak")
+    logger.typewriter_log(
+        f"{ai_name.upper()} THOUGHTS:", Fore.YELLOW, f"{assistant_thoughts_text}"
     )
-    from autogpt.json_fixes.parsing import fix_and_parse_json
+    logger.typewriter_log("REASONING:", Fore.YELLOW, f"{assistant_thoughts_reasoning}")
+    if assistant_thoughts_plan:
+        logger.typewriter_log("PLAN:", Fore.YELLOW, "")
+        # If it's a list, join it into a string
+        if isinstance(assistant_thoughts_plan, list):
+            assistant_thoughts_plan = "\n".join(assistant_thoughts_plan)
+        elif isinstance(assistant_thoughts_plan, dict):
+            assistant_thoughts_plan = str(assistant_thoughts_plan)
 
-    try:
-        try:
-            # Parse and print Assistant response
-            assistant_reply_json = fix_and_parse_json(assistant_reply)
-        except json.JSONDecodeError:
-            logger.error("Error: Invalid JSON in assistant thoughts\n", assistant_reply)
-            assistant_reply_json = attempt_to_fix_json_by_finding_outermost_brackets(
-                assistant_reply
-            )
-            if isinstance(assistant_reply_json, str):
-                assistant_reply_json = fix_and_parse_json(assistant_reply_json)
-
-        # Check if assistant_reply_json is a string and attempt to parse
-        # it into a JSON object
-        if isinstance(assistant_reply_json, str):
-            try:
-                assistant_reply_json = json.loads(assistant_reply_json)
-            except json.JSONDecodeError:
-                logger.error("Error: Invalid JSON\n", assistant_reply)
-                assistant_reply_json = (
-                    attempt_to_fix_json_by_finding_outermost_brackets(
-                        assistant_reply_json
-                    )
-                )
-
-        assistant_thoughts_reasoning = None
-        assistant_thoughts_plan = None
-        assistant_thoughts_speak = None
-        assistant_thoughts_criticism = None
-        if not isinstance(assistant_reply_json, dict):
-            assistant_reply_json = {}
-        assistant_thoughts = assistant_reply_json.get("thoughts", {})
-        assistant_thoughts_text = assistant_thoughts.get("text")
-
-        if assistant_thoughts:
-            assistant_thoughts_reasoning = assistant_thoughts.get("reasoning")
-            assistant_thoughts_plan = assistant_thoughts.get("plan")
-            assistant_thoughts_criticism = assistant_thoughts.get("criticism")
-            assistant_thoughts_speak = assistant_thoughts.get("speak")
-
-        logger.typewriter_log(
-            f"{ai_name.upper()} THOUGHTS:", Fore.YELLOW, f"{assistant_thoughts_text}"
-        )
-        logger.typewriter_log(
-            "REASONING:", Fore.YELLOW, f"{assistant_thoughts_reasoning}"
-        )
-
-        if assistant_thoughts_plan:
-            logger.typewriter_log("PLAN:", Fore.YELLOW, "")
-            # If it's a list, join it into a string
-            if isinstance(assistant_thoughts_plan, list):
-                assistant_thoughts_plan = "\n".join(assistant_thoughts_plan)
-            elif isinstance(assistant_thoughts_plan, dict):
-                assistant_thoughts_plan = str(assistant_thoughts_plan)
-
-            # Split the input_string using the newline character and dashes
-            lines = assistant_thoughts_plan.split("\n")
-            for line in lines:
-                line = line.lstrip("- ")
-                logger.typewriter_log("- ", Fore.GREEN, line.strip())
-
-        logger.typewriter_log(
-            "CRITICISM:", Fore.YELLOW, f"{assistant_thoughts_criticism}"
-        )
-        # Speak the assistant's thoughts
-        if CFG.speak_mode and assistant_thoughts_speak:
-            say_text(assistant_thoughts_speak)
-
-        return assistant_reply_json
-    except json.decoder.JSONDecodeError:
-        logger.error("Error: Invalid JSON\n", assistant_reply)
-        if CFG.speak_mode:
-            say_text(
-                "I have received an invalid JSON response from the OpenAI API."
-                " I cannot ignore this response."
-            )
-
-    # All other errors, return "Error: + error message"
-    except Exception:
-        call_stack = traceback.format_exc()
-        logger.error("Error: \n", call_stack)
+        # Split the input_string using the newline character and dashes
+        lines = assistant_thoughts_plan.split("\n")
+        for line in lines:
+            line = line.lstrip("- ")
+            logger.typewriter_log("- ", Fore.GREEN, line.strip())
+    logger.typewriter_log("CRITICISM:", Fore.YELLOW, f"{assistant_thoughts_criticism}")
+    # Speak the assistant's thoughts
+    if speak_mode and assistant_thoughts_speak:
+        say_text(assistant_thoughts_speak)
